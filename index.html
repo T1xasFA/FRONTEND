@@ -22,7 +22,7 @@
     <meta name="theme-color" content="#2f8f6b" />
     <link
       rel="canonical"
-      href="https://t1xasfa.github.io/Aqyl.Ai-math-tutor-for-Tests/"
+      href="https://t1xasfa.github.io/FRONTEND/"
     />
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
 
@@ -36,7 +36,7 @@
     />
     <meta
       property="og:url"
-      content="https://t1xasfa.github.io/Aqyl.Ai-math-tutor-for-Tests/"
+      content="https://t1xasfa.github.io/FRONTEND/"
     />
     <meta property="og:locale" content="kk_KZ" />
 
@@ -54,7 +54,7 @@
         "@context": "https://schema.org",
         "@type": "SoftwareApplication",
         "name": "AqylAI",
-        "url": "https://t1xasfa.github.io/Aqyl.Ai-math-tutor-for-Tests/",
+        "url": "https://t1xasfa.github.io/FRONTEND/",
         "applicationCategory": "EducationalApplication",
         "operatingSystem": "Web",
         "inLanguage": "kk",
@@ -11811,6 +11811,9 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
               ? "Соңғы жауап дұрыс көрінеді. Енді шешу жолындағы әр қадамда қолданылған формула мен арифметикалық түрлендіруді тексеріңіз. Егер бәрі негізделсе, шешім қабылданады."
               : `Соңғы жауап күтілетін жауаппен сәйкес емес. Бірінші тексеретін жер: формуланы дұрыс таңдадыңыз ба және соңғы ықшамдау кезінде таңба/бөлім өзгерген жоқ па. Күтілетін жауап: ${currentTask?.a || "—"}.`;
           }
+          if (mode === "model") {
+            return "AI сервері қолжетімсіз болғандықтан, ұқсас есепке арналған үлгі түсіндірме жасай алмадым. Қосылым қалпына келген соң қайта көріңіз.";
+          }
           return finalOk
             ? `Талдау:\n✓ Қорытынды жауап дұрыс көрінеді.\n✓ Шешу жолыңызда бірнеше қадам бар, бұл жақсы.\nКелесі жақсарту: әр қадамға қысқа негіздеме қосыңыз — қандай формула қолданылды және неге солай түрлендірілді.`
             : `Талдау:\n• Шешу жолыңыз қабылданды, бірақ соңғы жауап сәйкес емес.\n• Қайта қарау керек: формула таңдауы, таңба, дәреже немесе бөлшекті қысқарту.\nКелесі қадам: соңғы екі түрлендіруді қайта есептеп, жауабыңызды ${currentTask?.a || "күтілетін жауаппен"} салыстырыңыз.`;
@@ -11822,6 +11825,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
             setAiError("Алдымен шешу жолыңызды немесе жауабыңызды жазыңыз.");
             return;
           }
+
           setAiLoading(true);
           setAiError("");
           setAiAnalysis("");
@@ -11833,13 +11837,19 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
               hint: "Оқушыға тек қысқа hint бер. Соңғы жауапты ашпа.",
               mistake:
                 "Оқушының шешу жолындағы бірінші ықтимал қатені тап және қысқа түсіндір.",
-              model: "Оқушы сұрағандықтан, қысқа үлгі шешімді қадамдап көрсет.",
+              model:
+                "Осы есепке ұқсас, бірақ басқа сандары бар қысқа үлгі мысалмен әдісті түсіндір. Бастапқы есептің толық шешімін берме.",
             }[mode] || "Оқушының шешу жолын талда.";
 
+          let timeoutId = null;
+          const controller = new AbortController();
+
           try {
+            timeoutId = window.setTimeout(() => controller.abort(), 90000);
             const resp = await fetch(getAiApiUrl(), {
               method: "POST",
               headers: { "Content-Type": "application/json" },
+              signal: controller.signal,
               body: JSON.stringify({
                 taskText: currentTask.q,
                 expectedAnswer: currentTask.a,
@@ -11847,22 +11857,50 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
                 solutionText,
                 userMessage: modeText,
                 lang: "kk",
+                mode,
               }),
             });
-            if (!resp.ok) throw new Error(`AI API ${resp.status}`);
-            const data = await resp.json();
-            const reply =
-              data?.reply ||
-              data?.text ||
-              data?.analysis ||
-              localSolutionReview(mode);
-            setAiAnalysis(reply);
+
+            const data = await resp.json().catch(() => null);
+            if (!resp.ok) {
+              const detail = Array.isArray(data?.detail)
+                ? data.detail
+                    .map((item) => {
+                      const where = Array.isArray(item?.loc)
+                        ? item.loc.join(".")
+                        : "request";
+                      return `${where}: ${item?.msg || "invalid value"}`;
+                    })
+                    .join("; ")
+                : typeof data?.detail === "string"
+                  ? data.detail
+                  : "";
+              throw new Error(
+                `HTTP ${resp.status}${detail ? ` — ${detail}` : ""}`,
+              );
+            }
+
+            const reply = [data?.reply, data?.text, data?.analysis].find(
+              (value) => typeof value === "string" && value.trim(),
+            );
+            if (!reply) {
+              throw new Error("Сервер бос немесе түсініксіз жауап қайтарды.");
+            }
+
+            setAiAnalysis(reply.trim());
           } catch (e) {
             setAiAnalysis(localSolutionReview(mode));
+            const reason =
+              e?.name === "AbortError"
+                ? "Сервер 90 секунд ішінде жауап бермеді."
+                : e instanceof TypeError
+                  ? "Render backend-ке қосылу мүмкін болмады. Интернетті, CORS баптауын және Render сервисінің күйін тексеріңіз."
+                  : e?.message || "Белгісіз қате.";
             setAiError(
-              "Backend AI уақытша қолжетімсіз. Төменде жергілікті қысқа талдау көрсетілді.",
+              `AI жауабы алынбады: ${reason} Төменде жергілікті қысқа талдау көрсетілді.`,
             );
           } finally {
+            if (timeoutId !== null) window.clearTimeout(timeoutId);
             setAiLoading(false);
           }
         };
